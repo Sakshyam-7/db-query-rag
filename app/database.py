@@ -20,12 +20,31 @@ SessionLocal = sessionmaker(
 
 
 class Base(DeclarativeBase):
-    pass
+    pass 
 
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
 
+    try:
+        yield db
+    finally:
+        db.close()
+ 
+readonly_engine = create_engine(
+    settings.DATABASE_URL_READONLY,
+    pool_pre_ping=True,
+    connect_args={"options": "-c statement_timeout=3000"},
+)
+ReadOnlySessionLocal = sessionmaker(
+    bind=readonly_engine,
+    autoflush=False,
+    autocommit=False,
+)
+
+
+def get_readonly_db():
+    db = ReadOnlySessionLocal()
     try:
         yield db
     finally:
