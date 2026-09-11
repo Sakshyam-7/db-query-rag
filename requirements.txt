@@ -10,3 +10,5 @@ pyjwt
 openai
 tenacity
 requests
+sqlglot\
+sentence-transformers
