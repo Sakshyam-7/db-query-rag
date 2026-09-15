@@ -1,17 +1,7 @@
-"""
-Ticket service layer.
-
-Handles ticket-related business rules and coordinates
-ticket CRUD operations.
-
-This layer is HTTP-agnostic.
-"""
-
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.crud.project import get_project_by_id
 from app.crud.ticket import (
     create_ticket,
     delete_ticket,
@@ -20,6 +10,7 @@ from app.crud.ticket import (
     get_tickets_by_user,
     update_ticket,
 )
+from app.crud.project import get_project_by_id
 from app.models.ticket import Ticket
 from app.models.user import User, UserRole
 from app.schemas.ticket import TicketCreate, TicketUpdate
@@ -27,41 +18,42 @@ from app.schemas.ticket import TicketCreate, TicketUpdate
 
 class TicketNotFoundError(Exception):
     """Raised when the requested ticket does not exist."""
-
     pass
 
 
 class ProjectNotFoundError(Exception):
     """Raised when the requested project does not exist."""
-
     pass
 
 
 class TicketPermissionError(Exception):
     """Raised when a user does not have permission to perform an operation."""
-
     pass
 
 
 def get_ticket(
     db: Session,
     ticket_id: UUID,
+    current_user: User,
 ) -> Ticket:
     """
-    Get a ticket by ID.
-
-    Raises TicketNotFoundError if the ticket does not exist.
+    Get a ticket by ID. Only the project owner, an admin, or the
+    ticket's assignee may view it.
     """
-
-    ticket = get_ticket_by_id(
-        db,
-        ticket_id,
-    )
-
+    ticket = get_ticket_by_id(db, ticket_id)
     if ticket is None:
-        raise TicketNotFoundError(
-            "Ticket not found"
-        )
+        raise TicketNotFoundError("Ticket not found")
+
+    project = get_project_by_id(db, ticket.project_id)
+    if project is None:
+        raise ProjectNotFoundError("Project not found")
+
+    is_admin = current_user.role == UserRole.ADMIN
+    is_project_owner = project.owner_id == current_user.id
+    is_assignee = ticket.user_id == current_user.id
+
+    if not (is_admin or is_project_owner or is_assignee):
+        raise TicketPermissionError("You do not have permission to view this ticket")
 
     return ticket
 
@@ -69,20 +61,23 @@ def get_ticket(
 def get_project_tickets(
     db: Session,
     project_id: UUID,
+    current_user: User,
     *,
     limit: int = 50,
     offset: int = 0,
 ) -> list[Ticket]:
     """
-    Get all tickets belonging to a project.
+    Get all tickets belonging to a project. Only the project owner or
+    an admin may list them.
     """
+    project = get_project_by_id(db, project_id)
+    if project is None:
+        raise ProjectNotFoundError("Project not found")
 
-    return get_tickets_by_project(
-        db,
-        project_id,
-        limit=limit,
-        offset=offset,
-    )
+    if current_user.role != UserRole.ADMIN and project.owner_id != current_user.id:
+        raise TicketPermissionError("You do not have permission to view this project's tickets")
+
+    return get_tickets_by_project(db, project_id, limit=limit, offset=offset)
 
 
 def get_user_tickets(
@@ -93,15 +88,11 @@ def get_user_tickets(
     offset: int = 0,
 ) -> list[Ticket]:
     """
-    Get all tickets assigned to a specific user.
+    Get all tickets assigned to a specific user. No extra check needed
+    here -- callers always pass current_user.id (see router), so a user
+    only ever lists their own tickets through this path.
     """
-
-    return get_tickets_by_user(
-        db,
-        user_id,
-        limit=limit,
-        offset=offset,
-    )
+    return get_tickets_by_user(db, user_id, limit=limit, offset=offset)
 
 
 def create_user_ticket(
@@ -110,31 +101,15 @@ def create_user_ticket(
     ticket_data: TicketCreate,
 ) -> Ticket:
     """
-    Create a ticket for a project.
-
-    Rules:
-    - The project must exist.
-    - The authenticated user must be the project owner or ADMIN.
-    - The authenticated user automatically becomes the assignee.
-    - user_id is therefore not accepted from TicketCreate.
+    Create a ticket for a project. The authenticated user must be the
+    project owner or an admin. The authenticated user automatically
+    becomes the assigned user (creator = assignee).
     """
-
-    project = get_project_by_id(
-        db,
-        ticket_data.project_id,
-    )
-
+    project = get_project_by_id(db, ticket_data.project_id)
     if project is None:
-        raise ProjectNotFoundError(
-            "Project not found"
-        )
+        raise ProjectNotFoundError("Project not found")
 
-    # Only the project owner or an ADMIN can create
-    # a ticket for the project.
-    if (
-        current_user.role != UserRole.ADMIN
-        and project.owner_id != current_user.id
-    ):
+    if current_user.role != UserRole.ADMIN and project.owner_id != current_user.id:
         raise TicketPermissionError(
             "You do not have permission to create a ticket for this project"
         )
@@ -157,83 +132,32 @@ def update_user_ticket(
 ) -> Ticket:
     """
     Update a ticket.
-
-    ADMIN or project owner:
-        - title
-        - description
-        - priority
-        - status
-
-    Assignee:
-        - status only
-
-    There is no reassignment because TicketUpdate
-    does not contain user_id.
+    ADMIN or project owner can update any editable field.
+    The assignee (ticket.user_id) may update status only.
     """
-
-    project = get_project_by_id(
-        db,
-        ticket.project_id,
-    )
-
+    project = get_project_by_id(db, ticket.project_id)
     if project is None:
-        raise ProjectNotFoundError(
-            "Project not found"
-        )
+        raise ProjectNotFoundError("Project not found")
 
-    is_admin = (
-        current_user.role == UserRole.ADMIN
-    )
+    is_admin = current_user.role == UserRole.ADMIN
+    is_project_owner = project.owner_id == current_user.id
+    is_assignee = ticket.user_id == current_user.id
 
-    is_project_owner = (
-        project.owner_id == current_user.id
-    )
+    if not (is_admin or is_project_owner or is_assignee):
+        raise TicketPermissionError("You do not have permission to update this ticket")
 
-    is_assignee = (
-        ticket.user_id == current_user.id
-    )
-
-    # User must have at least one valid relationship
-    # with the ticket.
-    if not (
-        is_admin
-        or is_project_owner
-        or is_assignee
-    ):
-        raise TicketPermissionError(
-            "You do not have permission to update this ticket"
-        )
-
-    # Title, description and priority can only be
-    # changed by ADMIN or project owner.
     if (
-        (
-            ticket_data.title is not None
-            or ticket_data.description is not None
-            or ticket_data.priority is not None
-        )
-        and not (
-            is_admin
-            or is_project_owner
-        )
+        (ticket_data.title is not None
+         or ticket_data.description is not None
+         or ticket_data.priority is not None)
+        and not (is_admin or is_project_owner)
     ):
         raise TicketPermissionError(
-            "Only the project owner or an admin can change "
-            "title, description, or priority"
+            "Only the project owner or an admin can change these fields"
         )
 
-    # ADMIN, project owner, or assignee can change status.
-    if (
-        ticket_data.status is not None
-        and not (
-            is_admin
-            or is_project_owner
-            or is_assignee
-        )
-    ):
-        raise TicketPermissionError(
-            "You do not have permission to change ticket status"
-        )
+    if ticket_data.status is not None and not (is_admin or is_project_owner or is_assignee):
+        raise TicketPermissionError("You do not have permission to change ticket status")
 
     return update_ticket(
         db,
@@ -251,30 +175,13 @@ def delete_user_ticket(
     current_user: User,
 ) -> None:
     """
-    Delete a ticket.
-
-    Only the project owner or ADMIN may delete a ticket.
+    Delete a ticket. Only the project owner or an ADMIN may delete it.
     """
-
-    project = get_project_by_id(
-        db,
-        ticket.project_id,
-    )
-
+    project = get_project_by_id(db, ticket.project_id)
     if project is None:
-        raise ProjectNotFoundError(
-            "Project not found"
-        )
+        raise ProjectNotFoundError("Project not found")
 
-    if (
-        current_user.role != UserRole.ADMIN
-        and project.owner_id != current_user.id
-    ):
-        raise TicketPermissionError(
-            "You do not have permission to delete this ticket"
-        )
+    if current_user.role != UserRole.ADMIN and project.owner_id != current_user.id:
+        raise TicketPermissionError("You do not have permission to delete this ticket")
 
-    delete_ticket(
-        db,
-        ticket,
-    )
+    delete_ticket(db, ticket)
