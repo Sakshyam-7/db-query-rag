@@ -12,4 +12,5 @@ tenacity
 requests
 sqlglot\
 sentence-transformers
-pgv
+pgvector
+

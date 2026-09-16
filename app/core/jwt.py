@@ -1,13 +1,3 @@
-"""
-JWT access + refresh token creation and decoding.
-
-Two token types, distinguished by a "type" claim inside the payload --
-this stops a refresh token from being usable directly as an access token
-(or vice versa) if one leaks or is misused. There is deliberately only
-ONE decode function, and it always requires the caller to state which
-type it expects -- this removes the option to decode "unchecked" and
-accidentally skip the type check somewhere in the app.
-"""
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -18,11 +8,8 @@ from app.config import settings
 
 
 def create_access_token(user_id: UUID) -> str:
-    
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": str(user_id),
         "type": "access",
@@ -36,26 +23,7 @@ def create_access_token(user_id: UUID) -> str:
     )
 
 
-def create_refresh_token(user_id: UUID) -> str:
-    
-    now = datetime.now(timezone.utc)
-    expire = now + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
-    payload = {
-        "sub": str(user_id),
-        "type": "refresh",
-        "iat": now,
-        "exp": expire,
-    }
-    return jwt.encode(
-        payload,
-        settings.JWT_SECRET_KEY,
-        algorithm=settings.JWT_ALGORITHM,
-    )
-
-
-def decode_and_validate_token(token: str, expected_type: str) -> dict[str, Any]:
+def decode_and_validate_token(token: str, expected_type: str = "access") -> dict[str, Any]:
     
     payload = jwt.decode(
         token,
