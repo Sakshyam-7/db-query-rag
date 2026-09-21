@@ -88,5 +88,3 @@ async def sync_document_chunks(
         "kept_and_reordered": len(hashes_to_keep),
         "embedded_and_added": len(hashes_to_add),
     }
-
-    
