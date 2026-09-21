@@ -10,7 +10,7 @@ pyjwt
 openai
 tenacity
 requests
-sqlglot\
+sqlglot
 sentence-transformers
 pgvector
 
